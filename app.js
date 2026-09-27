@@ -32,52 +32,232 @@
   const sourceLabel = id => (SOURCES.find(s => s.id === id) || SOURCES[4]).label;
 
   // ---------- Holat ----------
-  let leads = load();
+  let leads = [];
+  let loading = true;
   const ui = { status: 'all', source: '', query: '', sort: 'created' };
 
-  // ---------- Saqlash ----------
-  function load() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const data = raw ? JSON.parse(raw) : [];
-      return Array.isArray(data) ? data.map(normalize) : [];
-    } catch (e) {
-      console.error(e);
-      return [];
-    }
-  }
-  function save() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(leads));
-    } catch (e) {
-      toast('Saqlab bo‘lmadi: brauzer xotirasi to‘lgan yoki bloklangan');
-    }
-  }
   function normalize(l) {
     const now = new Date().toISOString();
     return {
-      id: String(l.id || uid()),
-      name: String(l.name || '').trim(),
-      phone: String(l.phone || '').trim(),
-      instagram: cleanInsta(l.instagram || ''),
-      service: String(l.service || '').trim(),
+      id: String(l.id || ''),
+      name: String(l.name || '').trim().slice(0, 120),
+      phone: String(l.phone || '').trim().slice(0, 30),
+      instagram: cleanInsta(l.instagram || '').slice(0, 60),
+      service: String(l.service || '').trim().slice(0, 120),
       source: SOURCES.some(s => s.id === l.source) ? l.source : 'other',
       status: STATUSES.some(s => s.id === l.status) ? l.status : 'new',
-      amount: Math.max(0, parseInt(String(l.amount || 0).replace(/\D/g, ''), 10) || 0),
+      amount: Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, parseInt(String(l.amount || 0).replace(/\D/g, ''), 10) || 0)),
       nextContact: /^\d{4}-\d{2}-\d{2}$/.test(l.nextContact || '') ? l.nextContact : '',
-      note: String(l.note || ''),
+      note: String(l.note || '').slice(0, 2000),
       createdAt: l.createdAt || now,
       updatedAt: l.updatedAt || now,
     };
-  }
-  function uid() {
-    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
   function cleanInsta(v) {
     return String(v).trim()
       .replace(/^https?:\/\/(www\.)?instagram\.com\//i, '')
       .replace(/[/?#].*$/, '')
       .replace(/^@+/, '');
+  }
+
+  // ---------- Bulut (Supabase) ----------
+  const cfg = window.REVO_CONFIG || {};
+  let sb = null;
+  let channel = null;
+  let currentUser = null;
+
+  // Ilova ↔ baza ustunlari
+  const fromRow = r => normalize({
+    id: r.id, name: r.name, phone: r.phone, instagram: r.instagram, service: r.service,
+    source: r.source, status: r.status, amount: r.amount, nextContact: r.next_contact || '',
+    note: r.note, createdAt: r.created_at, updatedAt: r.updated_at,
+  });
+  function toRow(l, withCreated) {
+    const n = normalize(l);
+    const row = {
+      name: n.name, phone: n.phone, instagram: n.instagram, service: n.service,
+      source: n.source, status: n.status, amount: n.amount, next_contact: n.nextContact || null, note: n.note,
+    };
+    if (withCreated && l.createdAt && !isNaN(Date.parse(l.createdAt))) row.created_at = new Date(l.createdAt).toISOString();
+    return row;
+  }
+
+  function errText(error) {
+    const msg = String((error && (error.message || error.error_description)) || error || '');
+    if (/fetch|network|Failed to|Load failed/i.test(msg)) return 'Internet aloqasini tekshiring';
+    if (/JWT|expired|session/i.test(msg)) return 'Sessiya tugagan — qayta kiring';
+    if (/row-level security|permission|42501/i.test(msg)) return 'Ruxsat yo‘q — administratorga murojaat qiling';
+    return msg || 'Noma’lum xato';
+  }
+  function fail(prefix, error) {
+    console.error(prefix, error);
+    toast(`${prefix}: ${errText(error)}`);
+  }
+
+  const db = {
+    async all() {
+      const out = [];
+      const page = 1000;
+      for (let from = 0; ; from += page) {
+        const { data, error } = await sb.from('leads').select('*')
+          .order('created_at', { ascending: false }).range(from, from + page - 1);
+        if (error) throw error;
+        out.push(...data);
+        if (data.length < page) break;
+      }
+      return out.map(fromRow);
+    },
+    async insert(list, withCreated) {
+      const rows = list.map(l => toRow(l, withCreated));
+      const out = [];
+      for (let i = 0; i < rows.length; i += 500) {
+        const { data, error } = await sb.from('leads').insert(rows.slice(i, i + 500)).select();
+        if (error) throw error;
+        out.push(...data.map(fromRow));
+      }
+      return out;
+    },
+    async update(id, patch) {
+      const { data, error } = await sb.from('leads').update(patch).eq('id', id).select().single();
+      if (error) throw error;
+      return fromRow(data);
+    },
+    async remove(id) {
+      const { error } = await sb.from('leads').delete().eq('id', id);
+      if (error) throw error;
+    },
+    async removeAll() {
+      const { error } = await sb.from('leads').delete().not('id', 'is', null);
+      if (error) throw error;
+    },
+  };
+
+  // Mahalliy massivni yangilash (takrorlanishsiz)
+  function upsertLocal(lead) {
+    const i = leads.findIndex(l => l.id === lead.id);
+    if (i > -1) leads[i] = lead; else leads.push(lead);
+  }
+  function removeLocal(id) { leads = leads.filter(l => l.id !== id); }
+
+  let renderTimer;
+  const renderSoon = () => { clearTimeout(renderTimer); renderTimer = setTimeout(render, 60); };
+
+  async function refresh() {
+    try {
+      leads = await db.all();
+      loading = false;
+      render();
+      return true;
+    } catch (e) {
+      fail('Leadlarni yuklab bo‘lmadi', e);
+      return false;
+    }
+  }
+
+  function setSync(state) {
+    const s = document.getElementById('syncStatus');
+    s.className = 'sync' + (state === 'online' ? ' is-online' : state === 'offline' ? ' is-offline' : '');
+    s.querySelector('span').textContent = state === 'online' ? 'Sinxron' : state === 'offline' ? 'Aloqa yo‘q' : 'Ulanmoqda…';
+  }
+
+  function subscribe() {
+    unsubscribe();
+    setSync('connecting');
+    channel = sb.channel('leads-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, payload => {
+        if (payload.eventType === 'DELETE') removeLocal(payload.old && payload.old.id);
+        else if (payload.new && payload.new.id) upsertLocal(fromRow(payload.new));
+        renderSoon();
+      })
+      .subscribe(status => {
+        if (status === 'SUBSCRIBED') {
+          setSync('online');
+          refresh(); // uzilish paytida o'tkazib yuborilgan o'zgarishlarni olish
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          setSync('offline');
+        }
+      });
+  }
+  function unsubscribe() {
+    if (channel) { sb.removeChannel(channel); channel = null; }
+  }
+
+  // ---------- Ekranlar ----------
+  function setView(v) { document.body.dataset.view = v; }
+
+  async function onSession(session) {
+    if (!session) {
+      currentUser = null;
+      unsubscribe();
+      leads = []; loading = true;
+      setView('login');
+      return;
+    }
+    // Bir xil foydalanuvchi uchun takroriy hodisalar (SIGNED_IN + INITIAL_SESSION) — qayta yuklamaymiz
+    if (currentUser && currentUser.id === session.user.id && ['app', 'loading', 'denied'].includes(document.body.dataset.view)) return;
+    currentUser = session.user;
+    setView('loading');
+    try {
+      const { data, error } = await sb.from('crm_members').select('email').maybeSingle();
+      if (error) throw error;
+      if (!data) {
+        document.getElementById('deniedEmail').textContent = currentUser.email || '';
+        setView('denied');
+        return;
+      }
+      leads = await db.all();
+    } catch (e) {
+      console.error(e);
+      document.getElementById('gateErrorText').textContent = errText(e);
+      setView('error');
+      return;
+    }
+    loading = false;
+    document.getElementById('menuUser').innerHTML = `Kirgan hisob:<b>${esc(currentUser.email || '')}</b>`;
+    setView('app');
+    render();
+    subscribe();
+    offerMigration();
+  }
+
+  // ---------- Eski (localStorage) leadlarni ko'chirish ----------
+  const MIGRATED_KEY = 'revo-crm-migrated-v1';
+  function localLeads() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const data = raw ? JSON.parse(raw) : [];
+      return Array.isArray(data) ? data.map(normalize).filter(l => l.name) : [];
+    } catch (e) { return []; }
+  }
+  const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* e'tiborsiz */ } };
+
+  const dedupeKey = l => (l.name.toLowerCase() + '|' + l.phone.replace(/\D/g, ''));
+  function onlyNew(list) {
+    const seen = new Set(leads.map(dedupeKey));
+    return list.filter(l => { const k = dedupeKey(l); if (seen.has(k)) return false; seen.add(k); return true; });
+  }
+
+  async function offerMigration() {
+    const old = localLeads();
+    document.getElementById('migrateMenuItem').hidden = !old.length;
+    if (!old.length || lsGet(MIGRATED_KEY)) return;
+    const fresh = onlyNew(old);
+    if (!fresh.length) { lsSet(MIGRATED_KEY, new Date().toISOString()); return; }
+    const ok = await confirmOk('Eski leadlarni bulutga ko‘chirish',
+      `Bu qurilmada avvalgi versiyadan ${old.length} ta lead saqlangan (${fresh.length} tasi bulutda yo‘q). Ularni umumiy bazaga ko‘chiraylikmi?`, 'Ko‘chirish');
+    lsSet(MIGRATED_KEY, new Date().toISOString());
+    if (ok) await migrateLocal();
+    else toast('Keyinroq ⋮ menyudan ko‘chirishingiz mumkin');
+  }
+  async function migrateLocal() {
+    const fresh = onlyNew(localLeads());
+    if (!fresh.length) return toast('Ko‘chiriladigan yangi lead yo‘q');
+    try {
+      (await db.insert(fresh, true)).forEach(upsertLocal);
+      render();
+      toast(`${fresh.length} ta lead bulutga ko‘chirildi`);
+    } catch (e) { fail('Ko‘chirib bo‘lmadi', e); }
   }
 
   // ---------- Formatlash ----------
@@ -238,6 +418,10 @@
   function renderList() {
     const list = filtered();
 
+    if (loading) {
+      el.list.innerHTML = '<div class="loading-row"><div class="spinner"></div><span class="muted">Leadlar yuklanmoqda…</span></div>';
+      return;
+    }
     if (!leads.length) {
       el.list.innerHTML = `
         <div class="empty">
@@ -358,8 +542,15 @@
     amountInput.value = digits ? fmtNum(Number(digits)) : '';
   });
 
-  form.addEventListener('submit', e => {
+  const submitBtn = form.querySelector('button[type="submit"]');
+  function busy(btn, on, text) {
+    if (on) { btn.dataset.label = btn.textContent; btn.textContent = text || 'Saqlanmoqda…'; btn.disabled = true; }
+    else { btn.textContent = btn.dataset.label || btn.textContent; btn.disabled = false; }
+  }
+
+  form.addEventListener('submit', async e => {
     e.preventDefault();
+    if (submitBtn.disabled) return;
     const nameField = form.elements.name;
     if (!nameField.value.trim()) {
       nameField.closest('.field').classList.add('invalid');
@@ -373,17 +564,26 @@
       nextContact: f.nextContact.value, note: f.note.value.trim(),
     };
     const id = f.id.value;
-    if (id) {
-      const i = leads.findIndex(l => l.id === id);
-      if (i > -1) leads[i] = normalize({ ...leads[i], ...data, updatedAt: new Date().toISOString() });
-      toast('O‘zgarishlar saqlandi');
-    } else {
-      leads.push(normalize({ ...data, id: uid(), createdAt: new Date().toISOString() }));
-      toast('Lead qo‘shildi');
+    busy(submitBtn, true);
+    try {
+      if (id) {
+        upsertLocal(await db.update(id, toRow(data)));
+        toast('O‘zgarishlar saqlandi');
+      } else {
+        const [created] = await db.insert([data]);
+        upsertLocal(created);
+        toast('Lead qo‘shildi');
+      }
+      el.modal.close();
+      render();
+    } catch (err) {
+      if (err && err.code === 'PGRST116') {
+        removeLocal(id); render(); el.modal.close();
+        toast('Bu lead boshqa foydalanuvchi tomonidan o‘chirilgan');
+      } else fail('Saqlab bo‘lmadi', err);
+    } finally {
+      busy(submitBtn, false);
     }
-    save();
-    el.modal.close();
-    render();
   });
 
   form.elements.name.addEventListener('input', e => e.target.closest('.field').classList.remove('invalid'));
@@ -414,10 +614,12 @@
     if (!lead) return;
     const ok = await confirmDialog('Leadni o‘chirasizmi?', `“${lead.name}” butunlay o‘chiriladi. Bu amalni qaytarib bo‘lmaydi.`);
     if (!ok) return;
-    leads = leads.filter(l => l.id !== id);
-    save();
-    render();
-    toast('Lead o‘chirildi');
+    try {
+      await db.remove(id);
+      removeLocal(id);
+      render();
+      toast('Lead o‘chirildi');
+    } catch (e) { fail('O‘chirib bo‘lmadi', e); }
   }
 
   // ---------- Hodisalar ----------
@@ -437,6 +639,10 @@
         case 'export-json': return exportJSON();
         case 'import-json': return el.importFile.click();
         case 'clear': return clearAll();
+        case 'migrate-local': return migrateLocal();
+        case 'change-password': return openPassword();
+        case 'logout': return logout();
+        case 'reload': return location.reload();
       }
       return;
     }
@@ -449,16 +655,23 @@
   });
 
   // Holatni tezkor o'zgartirish
-  document.addEventListener('change', e => {
+  document.addEventListener('change', async e => {
     const sel = e.target.closest('select[data-role="status"]');
     if (!sel) return;
     const lead = leads.find(l => l.id === sel.dataset.id);
     if (!lead) return;
-    lead.status = sel.value;
-    lead.updatedAt = new Date().toISOString();
-    save();
+    const prev = lead.status;
+    lead.status = sel.value; // darhol ko'rsatamiz, xato bo'lsa qaytaramiz
     render();
-    toast(`Holat: ${statusLabel(lead.status)}`);
+    try {
+      upsertLocal(await db.update(lead.id, { status: lead.status }));
+      render();
+      toast(`Holat: ${statusLabel(lead.status)}`);
+    } catch (err) {
+      lead.status = prev;
+      render();
+      fail('Holatni o‘zgartirib bo‘lmadi', err);
+    }
   });
 
   el.chips.addEventListener('click', e => {
@@ -524,7 +737,7 @@
   }
 
   function exportJSON() {
-    download(`revo-crm-zaxira-${todayISO()}.json`, JSON.stringify({ app: 'revo-crm', version: 1, exportedAt: new Date().toISOString(), leads }, null, 2), 'application/json');
+    download(`revo-crm-zaxira-${todayISO()}.json`, JSON.stringify({ app: 'revo-crm', version: 2, exportedAt: new Date().toISOString(), leads }, null, 2), 'application/json');
     toast('Zaxira nusxa yuklab olindi');
   }
 
@@ -532,22 +745,24 @@
     const file = el.importFile.files[0];
     el.importFile.value = '';
     if (!file) return;
+    let fresh;
     try {
       const data = JSON.parse(await file.text());
       const arr = Array.isArray(data) ? data : data.leads;
       if (!Array.isArray(arr)) throw new Error('format');
       const incoming = arr.map(normalize).filter(l => l.name);
-      const ids = new Set(leads.map(l => l.id));
-      const fresh = incoming.filter(l => !ids.has(l.id));
-      const ok = await confirmOk('Zaxiradan tiklash', `${incoming.length} ta lead topildi, ulardan ${fresh.length} tasi yangi. Mavjud leadlarga qo‘shilsinmi?`, 'Qo‘shish');
-      if (!ok) return;
-      leads = leads.concat(fresh);
-      save();
+      fresh = onlyNew(incoming);
+    } catch (e) {
+      return toast('Faylni o‘qib bo‘lmadi — REVO CRM zaxira fayli ekanini tekshiring');
+    }
+    if (!fresh.length) return toast('Fayldagi barcha leadlar bazada allaqachon bor');
+    const ok = await confirmOk('Zaxiradan tiklash', `Faylda bazada yo‘q ${fresh.length} ta lead topildi (bir xil nom va telefonli leadlar o‘tkazib yuboriladi). Qo‘shilsinmi?`, 'Qo‘shish');
+    if (!ok) return;
+    try {
+      (await db.insert(fresh, true)).forEach(upsertLocal);
       render();
       toast(`${fresh.length} ta lead tiklandi`);
-    } catch (e) {
-      toast('Faylni o‘qib bo‘lmadi — REVO CRM zaxira fayli ekanini tekshiring');
-    }
+    } catch (e) { fail('Tiklab bo‘lmadi', e); }
   });
 
   async function confirmOk(title, text, okLabel) {
@@ -563,16 +778,18 @@
 
   async function clearAll() {
     if (!leads.length) return toast('Ro‘yxat allaqachon bo‘sh');
-    const ok = await confirmDialog('Barcha leadlarni o‘chirasizmi?', `${leads.length} ta lead butunlay o‘chiriladi. Avval zaxira nusxa olishni tavsiya qilamiz.`);
+    const ok = await confirmDialog('Barcha leadlarni o‘chirasizmi?', `${leads.length} ta lead butun jamoa uchun butunlay o‘chiriladi. Avval zaxira nusxa olishni tavsiya qilamiz.`);
     if (!ok) return;
-    leads = [];
-    save();
-    resetFilters();
-    toast('Barcha leadlar o‘chirildi');
+    try {
+      await db.removeAll();
+      leads = [];
+      resetFilters();
+      toast('Barcha leadlar o‘chirildi');
+    } catch (e) { fail('O‘chirib bo‘lmadi', e); }
   }
 
   // ---------- Namuna ma'lumot ----------
-  function addDemo() {
+  async function addDemo() {
     const shift = days => {
       const d = new Date(); d.setDate(d.getDate() + days);
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -586,10 +803,11 @@
       { name: 'Samarqand Travel', phone: '+998 91 234 56 78', instagram: 'samtravel', service: 'Video / Reels', source: 'phone', status: 'won', amount: 12000000, nextContact: '', note: '3 oylik shartnoma imzolandi.', createdAt: ago(14) },
       { name: 'EduPro o‘quv markazi', phone: '+998 88 111 22 33', instagram: 'edupro.uz', service: 'Brending / logotip', source: 'other', status: 'lost', amount: 5000000, nextContact: '', note: 'Byudjet yetmadi, 3 oydan keyin qayta yozish.', createdAt: ago(20) },
     ];
-    demo.forEach(d => leads.push(normalize({ ...d, id: uid() })));
-    save();
-    render();
-    toast('Namuna leadlar qo‘shildi');
+    try {
+      (await db.insert(demo, true)).forEach(upsertLocal);
+      render();
+      toast('Namuna leadlar qo‘shildi');
+    } catch (e) { fail('Qo‘shib bo‘lmadi', e); }
   }
 
   // ---------- Toast ----------
@@ -610,10 +828,95 @@
     form.elements.status.innerHTML = statusOptions('new');
     $('#serviceList').innerHTML = SERVICES.map(s => `<option value="${esc(s)}">`).join('');
     render();
+    startAuth();
   }
 
-  // Boshqa tabda o'zgarsa — sinxronlash
-  window.addEventListener('storage', e => { if (e.key === STORAGE_KEY) { leads = load(); render(); } });
+  // ---------- Login ----------
+  function keyProblem() {
+    const url = String(cfg.supabaseUrl || '').trim();
+    const key = String(cfg.supabaseAnonKey || '').trim();
+    if (!url || !key) return 'missing';
+    if (/^sb_secret_/.test(key)) return 'secret';
+    try { // eski JWT kalit: service_role bo'lsa ishlatmaymiz
+      const payload = JSON.parse(atob(key.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      if (payload.role === 'service_role') return 'secret';
+    } catch (e) { /* publishable kalit JWT emas */ }
+    return '';
+  }
+
+  function startAuth() {
+    const problem = keyProblem();
+    if (problem || !window.supabase) {
+      if (problem === 'secret') {
+        $('[data-gate="setup"] p').textContent = 'config.js ichida MAXFIY (secret / service_role) kalit turibdi! Uni darhol olib tashlang va Supabase’da kalitni almashtiring. Bu yerga faqat publishable (anon) kalit yoziladi.';
+      }
+      setView('setup');
+      return;
+    }
+    sb = window.supabase.createClient(cfg.supabaseUrl.trim(), cfg.supabaseAnonKey.trim(), {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+    });
+    // Supabase tavsiyasi: callback ichida to'g'ridan-to'g'ri await qilmaslik
+    sb.auth.onAuthStateChange((event, session) => {
+      if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') return;
+      setTimeout(() => onSession(session), 0);
+    });
+    // Ilovaga qaytganda (telefonda fon rejimidan) yangilash
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && document.body.dataset.view === 'app') refresh();
+    });
+  }
+
+  const loginForm = $('#loginForm');
+  loginForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = loginForm.querySelector('button[type="submit"]');
+    const errEl = $('#loginError');
+    const email = loginForm.elements.email.value.trim();
+    const password = loginForm.elements.password.value;
+    errEl.textContent = '';
+    if (!email || !password) { errEl.textContent = 'Email va parolni kiriting'; return; }
+    busy(btn, true, 'Kirilmoqda…');
+    const { error } = await sb.auth.signInWithPassword({ email, password });
+    busy(btn, false);
+    if (error) {
+      errEl.textContent = /invalid login credentials/i.test(error.message) ? 'Email yoki parol noto‘g‘ri'
+        : /not confirmed/i.test(error.message) ? 'Email tasdiqlanmagan — administratorga murojaat qiling'
+        : errText(error);
+      return;
+    }
+    loginForm.reset();
+  });
+
+  async function logout() {
+    closeMenu();
+    if (!sb) return;
+    unsubscribe();
+    await sb.auth.signOut().catch(() => {});
+    currentUser = null;
+    setView('login');
+  }
+
+  // Parolni o'zgartirish
+  const pwModal = $('#passwordModal');
+  const pwForm = $('#passwordForm');
+  function openPassword() {
+    pwForm.reset();
+    pwForm.querySelector('.field').classList.remove('invalid');
+    pwModal.showModal();
+  }
+  pwForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const input = pwForm.elements.password;
+    if (input.value.length < 8) { input.closest('.field').classList.add('invalid'); return; }
+    const btn = pwForm.querySelector('button[type="submit"]');
+    busy(btn, true);
+    const { error } = await sb.auth.updateUser({ password: input.value });
+    busy(btn, false);
+    if (error) return fail('Parolni o‘zgartirib bo‘lmadi', error);
+    pwModal.close();
+    toast('Parol o‘zgartirildi');
+  });
 
   init();
 })();

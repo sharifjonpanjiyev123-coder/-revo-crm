@@ -5,6 +5,6 @@
 //
 // "Secret key" / "service_role" kalitini HECH QACHON bu yerga yoki repozitoriyga yozmang!
 window.REVO_CONFIG = {
-  supabaseUrl: '',
+  supabaseUrl: 'https://vbqxuwutcuyzvtnzrdky.supabase.co',
   supabaseAnonKey: '',
 };

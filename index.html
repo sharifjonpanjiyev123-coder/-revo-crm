@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0b0c">
+  <title>REVO CRM — Leadlar</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e10600'/%3E%3Ctext x='16' y='23' font-family='Arial' font-weight='900' font-size='19' text-anchor='middle' fill='white'%3ER%3C/text%3E%3C/svg%3E">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="REVO CRM">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__inner">
+      <div class="brand">
+        <span class="brand__mark">R</span>
+        <span class="brand__name">REVO<span class="brand__dot">.</span></span>
+        <span class="brand__tag">Lead CRM</span>
+      </div>
+      <div class="topbar__actions">
+        <div class="menu">
+          <button class="btn btn--ghost btn--icon" id="menuBtn" aria-label="Menyu" aria-haspopup="true" aria-expanded="false">
+            <svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+          </button>
+          <div class="menu__list" id="menuList" hidden>
+            <button data-action="export-csv">CSV (Excel) yuklab olish</button>
+            <button data-action="export-json">Zaxira nusxa (JSON)</button>
+            <button data-action="import-json">Zaxiradan tiklash</button>
+            <button data-action="demo">Namuna ma'lumot qo‘shish</button>
+            <button data-action="clear" class="danger">Hammasini o‘chirish</button>
+          </div>
+          <input type="file" id="importFile" accept="application/json,.json" hidden>
+        </div>
+        <button class="btn btn--primary btn--desktop" id="addBtn">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg>
+          Yangi lead
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <h1>Leadlar boshqaruvi</h1>
+      <p class="muted" id="todayLabel"></p>
+    </section>
+
+    <section class="stats" id="stats" aria-label="Dashboard"></section>
+
+    <section class="alert" id="followupAlert" hidden></section>
+
+    <section class="panel">
+      <div class="toolbar">
+        <div class="search">
+          <svg viewBox="0 0 24 24" width="18" height="18"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <input type="search" id="searchInput" placeholder="Qidirish: nom, telefon, Instagram, xizmat…" autocomplete="off">
+        </div>
+        <div class="toolbar__selects">
+          <select id="sourceFilter" aria-label="Manba bo‘yicha filter">
+            <option value="">Barcha manbalar</option>
+          </select>
+          <select id="sortSelect" aria-label="Saralash">
+            <option value="created">Eng yangilari</option>
+            <option value="followup">Keyingi aloqa sanasi</option>
+            <option value="amount">Summa (kattadan)</option>
+            <option value="name">Nom (A–Z)</option>
+          </select>
+        </div>
+      </div>
+      <div class="chips" id="statusChips" role="tablist" aria-label="Status bo‘yicha filter"></div>
+
+      <div id="leadList"></div>
+    </section>
+
+    <footer class="foot muted">
+      Ma'lumotlar shu brauzerda saqlanadi. Muntazam zaxira nusxa oling (⋮ menyu).
+    </footer>
+  </main>
+
+  <button class="fab" id="fabBtn" aria-label="Yangi lead qo‘shish">
+    <svg viewBox="0 0 24 24" width="26" height="26"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" fill="none"/></svg>
+  </button>
+
+  <!-- Lead form -->
+  <dialog class="modal" id="leadModal">
+    <form method="dialog" class="modal__box" id="leadForm" novalidate>
+      <div class="modal__head">
+        <h2 id="modalTitle">Yangi lead</h2>
+        <button type="button" class="btn btn--ghost btn--icon" data-close aria-label="Yopish">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="modal__body">
+        <input type="hidden" name="id">
+        <label class="field field--full">
+          <span>Biznes / mijoz nomi <b class="req">*</b></span>
+          <input name="name" required maxlength="120" placeholder="Masalan: Coffee House">
+          <small class="field__err">Nomni kiriting</small>
+        </label>
+        <label class="field">
+          <span>Telefon raqami</span>
+          <input name="phone" type="tel" inputmode="tel" maxlength="30" placeholder="+998 90 123 45 67">
+        </label>
+        <label class="field">
+          <span>Instagram username</span>
+          <div class="prefix"><em>@</em><input name="instagram" maxlength="60" placeholder="username" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+        </label>
+        <label class="field field--full">
+          <span>Qiziqayotgan xizmat</span>
+          <input name="service" list="serviceList" maxlength="120" placeholder="SMM, Target, Sayt, Brending…">
+          <datalist id="serviceList"></datalist>
+        </label>
+        <label class="field">
+          <span>Lead manbasi</span>
+          <select name="source"></select>
+        </label>
+        <label class="field">
+          <span>Holati</span>
+          <select name="status"></select>
+        </label>
+        <label class="field">
+          <span>Potensial summa (so‘m)</span>
+          <input name="amount" inputmode="numeric" placeholder="0" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Keyingi aloqa sanasi</span>
+          <input name="nextContact" type="date">
+        </label>
+        <label class="field field--full">
+          <span>Izoh</span>
+          <textarea name="note" rows="3" maxlength="2000" placeholder="Muhim tafsilotlar, kelishuvlar…"></textarea>
+        </label>
+      </div>
+      <div class="modal__foot">
+        <button type="button" class="btn btn--danger-ghost" id="deleteInForm" hidden>O‘chirish</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn--ghost" data-close>Bekor qilish</button>
+        <button type="submit" class="btn btn--primary">Saqlash</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Confirm -->
+  <dialog class="modal modal--sm" id="confirmModal">
+    <form method="dialog" class="modal__box">
+      <div class="modal__body modal__body--plain">
+        <h3 id="confirmTitle">Ishonchingiz komilmi?</h3>
+        <p class="muted" id="confirmText"></p>
+      </div>
+      <div class="modal__foot">
+        <span class="spacer"></span>
+        <button value="cancel" class="btn btn--ghost">Bekor qilish</button>
+        <button value="ok" class="btn btn--danger">O‘chirish</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

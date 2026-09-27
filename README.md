@@ -2,7 +2,14 @@
 
 REVO Agency uchun oddiy lead CRM (MVP). Instagram, Telegram, telefon va tavsiyalar orqali kelgan potensial mijozlarni bir joyda boshqarish uchun.
 
-## Ishga tushirish
+**Onlayn:** https://sharifjonpanjiyev123-coder.github.io/-revo-crm/
+
+## Telefonga o‘rnatish
+
+- **iPhone (Safari):** havolani oching → "Ulashish" tugmasi → "Uy ekraniga qo‘shish" (Add to Home Screen).
+- **Android (Chrome):** havolani oching → ⋮ menyu → "Bosh ekranga qo‘shish" / "Ilovani o‘rnatish".
+
+## Ishga tushirish (lokal)
 
 O‘rnatish shart emas — `index.html` faylini brauzerda oching.
 
@@ -13,7 +20,7 @@ python3 -m http.server 8080
 # http://localhost:8080
 ```
 
-GitHub Pages, Netlify yoki Vercel'ga statik sayt sifatida joylash mumkin (build talab qilinmaydi).
+Sayt GitHub Pages orqali `main` branch'idan (root papka) avtomatik joylanadi: `main`'ga har bir push bir-ikki daqiqada saytda paydo bo‘ladi.
 
 ## Imkoniyatlar
 
